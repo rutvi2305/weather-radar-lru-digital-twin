@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Weather Radar LRU — Live Digital Twin</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+<style>
+  :root {
+    --bg0: #06090e; --bg1: #0d1520; --bg2: #121d2b; --bg3: #1a2535;
+    --border: #1e3048; --green: #00d450; --green-dim: #00401a;
+    --cyan: #00c8dc; --amber: #f0a500; --red: #dc2020;
+    --purple: #a855f7; --white: #e0e6f0; --gray: #5a6880;
+    --font: 'Consolas', 'Courier New', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg0); color: var(--white); font-family: var(--font);
+         font-size: 13px; overflow: hidden; height: 100vh; }
+
+  /* Layout */
+  .shell { display: grid; grid-template-columns: 680px 1fr; grid-template-rows: 32px 1fr;
+           height: 100vh; gap: 0; }
+  .topbar { grid-column: 1/-1; background: var(--bg1); border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; padding: 0 12px; gap: 16px; }
+  .left  { background: var(--bg0); display: flex; flex-direction: column; }
+  .right { background: var(--bg1); border-left: 1px solid var(--border);
+           display: flex; flex-direction: column; overflow: hidden; }
+
+  /* Topbar */
+  .logo { font-size: 14px; font-weight: bold; color: var(--green); letter-spacing: .06em; }
+  .tstat { font-size: 11px; color: var(--gray); }
+  .tstat span { color: var(--white); }
+  .tstat.warn span { color: var(--amber); }
+  .tstat.fault span { color: var(--red); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green);
+         display: inline-block; animation: pulse 1.8s infinite; }
+  .dot.warn { background: var(--amber); }
+  .dot.fault { background: var(--red); animation: blink .5s step-end infinite; }
+  @keyframes pulse { 0%,100%{opacity:1}50%{opacity:.4} }
+  @keyframes blink  { 0%,100%{opacity:1}50%{opacity:0} }
+  .ml-auto { margin-left: auto; }
+
+  /* PPI canvas */
+  #ppi { display: block; width: 680px; height: 680px; cursor: crosshair; }
+
+  /* Right panel tabs */
+  .tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .tab { padding: 7px 14px; font-size: 12px; cursor: pointer; color: var(--gray);
+         border-bottom: 2px solid transparent; transition: all .15s; }
+  .tab.active { color: var(--green); border-bottom-color: var(--green); }
+  .tab-body { flex: 1; overflow-y: auto; padding: 10px; display: none; }
+  .tab-body.active { display: block; }
+
+  /* Cards */
+  .card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
+          padding: 10px; margin-bottom: 8px; }
+  .card-title { font-size: 11px; color: var(--gray); text-transform: uppercase;
+                letter-spacing: .06em; margin-bottom: 8px; }
+
+  /* Form inputs */
+  .form-row { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+  .form-row label { min-width: 110px; font-size: 12px; color: var(--gray); }
+  input[type=number], input[type=text], select {
+    background: var(--bg3); border: 1px solid var(--border); border-radius: 4px;
+    color: var(--white); font-family: var(--font); font-size: 12px;
+    padding: 4px 8px; flex: 1; min-width: 0;
+  }
+  input[type=range] { flex: 1; accent-color: var(--green); }
+  .val-badge { min-width: 52px; text-align: right; font-size: 12px; color: var(--cyan); }
+  .btn { padding: 6px 14px; border-radius: 4px; border: 1px solid var(--border);
+         background: var(--bg3); color: var(--white); font-family: var(--font);
+         font-size: 12px; cursor: pointer; transition: all .15s; }
+  .btn:hover { background: var(--bg1); }
+  .btn-primary { background: var(--green-dim); border-color: var(--green); color: var(--green); }
+  .btn-primary:hover { background: #005a20; }
+  .btn-danger { background: #3a0a0a; border-color: var(--red); color: var(--red); }
+  .row-btns { display: flex; gap: 6px; justify-content: flex-end; margin-top: 6px; }
+
+  /* Fault buttons */
+  .fault-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .fault-btn { padding: 8px 10px; border-radius: 5px; border: 1px solid var(--border);
+               background: var(--bg3); cursor: pointer; text-align: left; transition: all .15s; }
+  .fault-btn:hover { background: var(--bg2); }
+  .fault-btn.active { background: #3a0808; border-color: var(--red); }
+  .fault-btn .fn { font-size: 12px; font-weight: bold; color: var(--white); display: block; }
+  .fault-btn.active .fn { color: var(--red); }
+  .fault-btn .fd { font-size: 10px; color: var(--gray); display: block; margin-top: 2px; }
+
+  /* ARINC bus log */
+  .bus-log { font-size: 11px; font-family: var(--font); }
+  .bword { display: flex; gap: 6px; padding: 2px 4px; border-radius: 3px;
+           margin-bottom: 1px; animation: fadeIn .2s; }
+  .bword.corrupt { background: rgba(220,32,32,.1); }
+  .bword.phantom { background: rgba(168,85,247,.1); }
+  .bword.fault-w { background: rgba(240,165,0,.1); }
+  @keyframes fadeIn { from{opacity:0;transform:translateX(-4px)} to{opacity:1} }
+  .lbl-badge { font-size: 10px; padding: 1px 5px; border-radius: 3px;
+               background: var(--bg3); color: var(--gray); min-width: 28px; text-align: center; }
+  .b-label  { color: #3b82f6; }
+  .b-sdi    { color: #22c55e; }
+  .b-data   { color: var(--amber); }
+  .b-ssm    { color: var(--purple); }
+  .b-par    { color: var(--gray); }
+
+  /* Status grid */
+  .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .stat-card { background: var(--bg3); border-radius: 4px; padding: 7px 10px; }
+  .stat-lbl  { font-size: 10px; color: var(--gray); }
+  .stat-val  { font-size: 15px; font-weight: bold; color: var(--white);
+               font-variant-numeric: tabular-nums; }
+  .stat-val.warn { color: var(--amber); }
+  .stat-val.fault { color: var(--red); }
+  .stat-val.ok { color: var(--green); }
+
+  /* Cell list */
+  .cell-item { display: flex; align-items: center; gap: 8px; padding: 5px 8px;
+               background: var(--bg3); border-radius: 4px; margin-bottom: 4px; }
+  .cell-dot  { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .cell-info { flex: 1; font-size: 11px; }
+  .cell-name { font-weight: bold; color: var(--white); }
+  .cell-meta { color: var(--gray); font-size: 10px; }
+  .cell-del  { background: none; border: none; color: var(--gray); cursor: pointer;
+               font-size: 14px; padding: 0 4px; }
+  .cell-del:hover { color: var(--red); }
+
+  /* History table */
+  .hist-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .hist-table th { color: var(--gray); text-align: left; padding: 4px 6px;
+                   border-bottom: 1px solid var(--border); }
+  .hist-table td { padding: 3px 6px; border-bottom: 1px solid rgba(30,48,72,.4); }
+  .hist-table tr:hover td { background: var(--bg3); }
+
+  /* Toast */
+  #toast { position: fixed; bottom: 20px; right: 20px; padding: 8px 16px;
+           background: var(--bg2); border: 1px solid var(--green); border-radius: 6px;
+           color: var(--green); font-size: 12px; opacity: 0; transition: opacity .3s;
+           z-index: 999; pointer-events: none; }
+  #toast.show { opacity: 1; }
+  #toast.warn-toast { border-color: var(--amber); color: var(--amber); }
+
+  /* Connection status */
+  #conn-status { font-size: 11px; }
+  .connected { color: var(--green); }
+  .disconnected { color: var(--red); }
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+  <!-- TOP BAR -->
+  <div class="topbar">
+    <div class="logo">⬡ WEATHER RADAR LRU — DIGITAL TWIN</div>
+    <div class="tstat">MODE <span id="t-mode">--</span></div>
+    <div class="tstat">TILT <span id="t-tilt">--</span></div>
+    <div class="tstat">GAIN <span id="t-gain">--</span></div>
+    <div class="tstat">HDG <span id="t-hdg">--</span></div>
+    <div class="tstat"><span class="dot" id="sweep-dot"></span> SWEEP <span id="t-sweep">--</span></div>
+    <div class="tstat fault" id="t-fault-bar" style="display:none">
+      <span class="dot fault"></span> <span id="t-faults">--</span>
+    </div>
+    <div class="ml-auto" id="conn-status"><span class="disconnected">● CONNECTING...</span></div>
+  </div>
+
+  <!-- LEFT: PPI RADAR -->
+  <div class="left">
+    <canvas id="ppi" width="680" height="680"></canvas>
+  </div>
+
+  <!-- RIGHT PANEL -->
+  <div class="right">
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('live')">Live Data</div>
+      <div class="tab" onclick="switchTab('cells')">Add Cell</div>
+      <div class="tab" onclick="switchTab('aircraft')">Aircraft</div>
+      <div class="tab" onclick="switchTab('faults')">Faults</div>
+      <div class="tab" onclick="switchTab('bus')">Bus Monitor</div>
+      <div class="tab" onclick="switchTab('history')">History</div>
+    </div>
+
+    <!-- LIVE STATUS TAB -->
+    <div class="tab-body active" id="tab-live">
+      <div class="stat-grid" id="stat-grid">
+        <div class="stat-card"><div class="stat-lbl">Radar mode</div><div class="stat-val" id="s-mode">--</div></div>
+        <div class="stat-card"><div class="stat-lbl">Reported mode</div><div class="stat-val" id="s-rmode">--</div></div>
+        <div class="stat-card"><div class="stat-lbl">Tilt (effective)</div><div class="stat-val" id="s-tilt">--</div></div>
+        <div class="stat-card"><div class="stat-lbl">Gain</div><div class="stat-val" id="s-gain">--</div></div>
+        <div class="stat-card"><div class="stat-lbl">Cells visible</div><div class="stat-val ok" id="s-cells">0</div></div>
+        <div class="stat-card"><div class="stat-lbl">Words sent</div><div class="stat-val" id="s-words">0</div></div>
+        <div class="stat-card"><div class="stat-lbl">Corrupt words</div><div class="stat-val" id="s-corrupt">0</div></div>
+        <div class="stat-card"><div class="stat-lbl">Dropout %</div><div class="stat-val" id="s-drop">0%</div></div>
+        <div class="stat-card"><div class="stat-lbl">Heading</div><div class="stat-val" id="s-hdg">--</div></div>
+        <div class="stat-card"><div class="stat-lbl">Altitude</div><div class="stat-val" id="s-alt">--</div></div>
+        <div class="stat-card"><div class="stat-lbl">SSM status</div><div class="stat-val" id="s-ssm">--</div></div>
+        <div class="stat-card"><div class="stat-lbl">Active faults</div><div class="stat-val fault" id="s-faultcount">0</div></div>
+      </div>
+
+      <div class="card" style="margin-top:8px">
+        <div class="card-title">Active weather cells (on radar)</div>
+        <div id="live-cell-list"><div style="color:var(--gray);font-size:11px">No cells yet — add cells in the "Add Cell" tab</div></div>
+      </div>
+    </div>
+
+    <!-- ADD CELL TAB -->
+    <div class="tab-body" id="tab-cells">
+      <div class="card">
+        <div class="card-title">Add / update weather cell</div>
+        <div class="form-row">
+          <label>Cell name</label>
+          <input type="text" id="c-name" placeholder="e.g. Thunderstorm Alpha" value="">
+        </div>
+        <div class="form-row">
+          <label>Azimuth (0–360°)</label>
+          <input type="range" id="c-az" min="0" max="359" step="1" value="90" oninput="upd('c-az-v',this.value+'°')">
+          <span class="val-badge" id="c-az-v">90°</span>
+        </div>
+        <div class="form-row">
+          <label>Range (nm)</label>
+          <input type="range" id="c-rng" min="10" max="320" step="5" value="80" oninput="upd('c-rng-v',this.value+' nm')">
+          <span class="val-badge" id="c-rng-v">80 nm</span>
+        </div>
+        <div class="form-row">
+          <label>Reflectivity (dBZ)</label>
+          <input type="range" id="c-dbz" min="10" max="70" step="1" value="40" oninput="updDbz(this.value)">
+          <span class="val-badge" id="c-dbz-v" style="color:var(--amber)">40</span>
+        </div>
+        <div class="form-row">
+          <label>Width (°)</label>
+          <input type="range" id="c-w" min="5" max="40" step="1" value="15" oninput="upd('c-w-v',this.value+'°')">
+          <span class="val-badge" id="c-w-v">15°</span>
+        </div>
+        <div class="form-row">
+          <label>Altitude (ft)</label>
+          <input type="number" id="c-alt" value="25000" min="1000" max="60000" step="1000">
+        </div>
+        <div class="form-row">
+          <label>Added by</label>
+          <input type="text" id="c-by" value="operator" placeholder="your name">
+        </div>
+        <div class="row-btns">
+          <button class="btn btn-primary" onclick="addCell()">+ Add to Radar</button>
+          <button class="btn" onclick="clearCellForm()">Clear</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">dBZ intensity reference</div>
+        <div style="display:flex;flex-direction:column;gap:4px;font-size:11px">
+          <div style="display:flex;gap:8px;align-items:center"><span style="width:12px;height:12px;border-radius:50%;background:#00b4d8;display:inline-block"></span>Light (20–30 dBZ) — drizzle</div>
+          <div style="display:flex;gap:8px;align-items:center"><span style="width:12px;height:12px;border-radius:50%;background:#00e050;display:inline-block"></span>Moderate (30–40 dBZ) — light rain</div>
+          <div style="display:flex;gap:8px;align-items:center"><span style="width:12px;height:12px;border-radius:50%;background:#e6dc14;display:inline-block"></span>Heavy (40–50 dBZ) — heavy rain</div>
+          <div style="display:flex;gap:8px;align-items:center"><span style="width:12px;height:12px;border-radius:50%;background:#f08214;display:inline-block"></span>Intense (50–55 dBZ) — very heavy</div>
+          <div style="display:flex;gap:8px;align-items:center"><span style="width:12px;height:12px;border-radius:50%;background:#dc2828;display:inline-block"></span>Extreme (55–70 dBZ) — severe storm</div>
+          <div style="display:flex;gap:8px;align-items:center"><span style="width:12px;height:12px;border-radius:50%;background:#dc28dc;display:inline-block"></span>Hail (70+ dBZ)</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- AIRCRAFT TAB -->
+    <div class="tab-body" id="tab-aircraft">
+      <div class="card">
+        <div class="card-title">Aircraft parameters (live)</div>
+        <div class="form-row"><label>Heading (°)</label>
+          <input type="range" id="a-hdg" min="0" max="359" step="1" value="45" oninput="upd('a-hdg-v',String(parseInt(this.value)).padStart(3,'0')+'°')">
+          <span class="val-badge" id="a-hdg-v">045°</span>
+        </div>
+        <div class="form-row"><label>Pitch (°)</label>
+          <input type="range" id="a-pitch" min="-20" max="20" step="0.5" value="0" oninput="upd('a-pitch-v',parseFloat(this.value).toFixed(1)+'°')">
+          <span class="val-badge" id="a-pitch-v">0.0°</span>
+        </div>
+        <div class="form-row"><label>Roll (°)</label>
+          <input type="range" id="a-roll" min="-30" max="30" step="0.5" value="0" oninput="upd('a-roll-v',parseFloat(this.value).toFixed(1)+'°')">
+          <span class="val-badge" id="a-roll-v">0.0°</span>
+        </div>
+        <div class="form-row"><label>Altitude (ft)</label>
+          <input type="number" id="a-alt" value="35000" min="0" max="60000" step="500">
+        </div>
+        <div class="form-row"><label>Airspeed (kt)</label>
+          <input type="number" id="a-spd" value="480" min="0" max="1000" step="10">
+        </div>
+        <div class="row-btns">
+          <button class="btn btn-primary" onclick="saveAircraft()">Update Aircraft</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Pilot controls (live)</div>
+        <div class="form-row"><label>Radar mode</label>
+          <select id="p-mode">
+            <option value="WX">Weather (WX)</option>
+            <option value="GMAP">Ground Map (GMAP)</option>
+            <option value="TURB">Turbulence (TURB)</option>
+            <option value="STBY">Standby (STBY)</option>
+          </select>
+        </div>
+        <div class="form-row"><label>Tilt (°)</label>
+          <input type="range" id="p-tilt" min="-15" max="15" step="0.5" value="0" oninput="upd('p-tilt-v',parseFloat(this.value).toFixed(1)+'°')">
+          <span class="val-badge" id="p-tilt-v">0.0°</span>
+        </div>
+        <div class="form-row"><label>Gain (%)</label>
+          <input type="range" id="p-gain" min="0" max="100" step="1" value="65" oninput="upd('p-gain-v',this.value+'%')">
+          <span class="val-badge" id="p-gain-v">65%</span>
+        </div>
+        <div class="form-row"><label>Range (nm)</label>
+          <select id="p-range">
+            <option value="40">40 nm</option>
+            <option value="80">80 nm</option>
+            <option value="160" selected>160 nm</option>
+            <option value="240">240 nm</option>
+            <option value="320">320 nm</option>
+          </select>
+        </div>
+        <div class="row-btns">
+          <button class="btn btn-primary" onclick="saveControls()">Update Controls</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- FAULT INJECTION TAB -->
+    <div class="tab-body" id="tab-faults">
+      <div class="card">
+        <div class="card-title">Fault injection — click to toggle</div>
+        <div class="fault-grid">
+          <button class="fault-btn" id="fb-BIT_FLIP" onclick="toggleFault('BIT_FLIP')">
+            <span class="fn">Bit Flip</span>
+            <span class="fd">Corrupt ARINC data bits</span>
+          </button>
+          <button class="fault-btn" id="fb-WORD_DROPOUT" onclick="toggleFault('WORD_DROPOUT')">
+            <span class="fn">Word Dropout</span>
+            <span class="fd">Drop 40% of bus words</span>
+          </button>
+          <button class="fault-btn" id="fb-LATENCY" onclick="toggleFault('LATENCY')">
+            <span class="fn">Bus Latency</span>
+            <span class="fd">Add 2.1 s delay</span>
+          </button>
+          <button class="fault-btn" id="fb-PHANTOM_ECHO" onclick="toggleFault('PHANTOM_ECHO')">
+            <span class="fn">False Echoes</span>
+            <span class="fd">Inject phantom storm cells</span>
+          </button>
+          <button class="fault-btn" id="fb-ANTENNA_STUCK" onclick="toggleFault('ANTENNA_STUCK')">
+            <span class="fn">Tilt Stuck</span>
+            <span class="fd">Antenna locked at +5°</span>
+          </button>
+          <button class="fault-btn" id="fb-MODE_MISMATCH" onclick="toggleFault('MODE_MISMATCH')">
+            <span class="fn">Mode Mismatch</span>
+            <span class="fd">Report wrong radar mode</span>
+          </button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Fault event log (live)</div>
+        <div id="fault-log" style="font-size:11px;max-height:220px;overflow-y:auto"></div>
+      </div>
+    </div>
+
+    <!-- BUS MONITOR TAB -->
+    <div class="tab-body" id="tab-bus">
+      <div style="font-size:10px;color:var(--gray);margin-bottom:6px;display:flex;gap:10px">
+        <span style="color:#3b82f6">■ LABEL(8)</span>
+        <span style="color:#22c55e">■ SDI(2)</span>
+        <span style="color:var(--amber)">■ DATA(19)</span>
+        <span style="color:var(--purple)">■ SSM(2)</span>
+        <span style="color:var(--gray)">■ PAR(1)</span>
+        <button class="btn" style="margin-left:auto;padding:2px 8px;font-size:10px" onclick="clearBusLog()">Clear</button>
+      </div>
+      <div class="bus-log" id="bus-log"></div>
+    </div>
+
+    <!-- HISTORY TAB -->
+    <div class="tab-body" id="tab-history">
+      <div class="card">
+        <div class="card-title">All cells ever added (backend database)</div>
+        <div style="overflow-x:auto">
+          <table class="hist-table" id="hist-cells">
+            <thead><tr><th>ID</th><th>Name</th><th>Az</th><th>Rng</th><th>dBZ</th><th>Added by</th><th>Status</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Fault injection history (backend database)</div>
+        <div style="overflow-x:auto">
+          <table class="hist-table" id="hist-faults">
+            <thead><tr><th>Time</th><th>Fault</th><th>Action</th><th>By</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="row-btns">
+        <button class="btn" onclick="loadHistory()">↻ Refresh</button>
+      </div>
+    </div>
+
+  </div><!-- /right -->
+</div><!-- /shell -->
+
+<div id="toast"></div>
+
+<script>
+// ── Socket.IO connection ──────────────────────────────────────────────────────
+const socket = io();
+let activeFaults = new Set();
+let currentCells = [];
+let busLogLines = [];
+const MAX_BUS = 80;
+
+socket.on('connect', () => {
+  document.getElementById('conn-status').innerHTML = '<span class="connected">● LIVE</span>';
+});
+socket.on('disconnect', () => {
+  document.getElementById('conn-status').innerHTML = '<span class="disconnected">● OFFLINE</span>';
+});
+
+// Full initial state
+socket.on('full_state', data => {
+  applySnapshot(data);
+  if (data.cells) renderCellList(data.cells);
+  if (data.active_faults) syncFaultButtons(data.active_faults);
+});
+
+// Live radar sweep (10 Hz)
+socket.on('radar_sweep', data => {
+  applySnapshot(data);
+  renderPPI(data);
+});
+
+// Every ARINC 429 word
+socket.on('arinc_word', word => {
+  addBusWord(word);
+});
+
+// Fault events
+socket.on('fault_event', ev => {
+  addFaultLog(ev);
+  syncFaultButtons(ev.active_faults);
+  activeFaults = new Set(ev.active_faults);
+  updateFaultBar();
+  toast(`${ev.action.toUpperCase()}: ${ev.fault_type}`, ev.action === 'activate');
+});
+
+// DB updates (mentor added/changed data)
+socket.on('db_update', data => {
+  if (data.cells) {
+    currentCells = data.cells;
+    renderCellList(data.cells);
+  }
+  toast(data.message || 'Data updated', false);
+});
+
+// ── Snapshot → status panel ───────────────────────────────────────────────────
+function applySnapshot(d) {
+  setText('t-mode', d.actual_mode || '--');
+  setText('t-tilt', (d.effective_tilt != null ? (d.effective_tilt >= 0 ? '+' : '') + d.effective_tilt.toFixed(1) + '°' : '--'));
+  setText('t-gain', d.controls ? d.controls.gain + '%' : '--');
+  setText('t-hdg',  d.aircraft ? Math.round(d.aircraft.heading_deg) + '°' : '--');
+  setText('t-sweep', d.sweep_angle != null ? d.sweep_angle.toFixed(0) + '°' : '--');
+
+  setText('s-mode',  d.actual_mode   || '--');
+  const mismatch = d.mode_mismatch;
+  const rmEl = document.getElementById('s-rmode');
+  rmEl.textContent = d.reported_mode || '--';
+  rmEl.className = 'stat-val' + (mismatch ? ' fault' : ' ok');
+
+  const tiltEl = document.getElementById('s-tilt');
+  tiltEl.textContent = d.effective_tilt != null ? (d.effective_tilt >= 0 ? '+' : '') + d.effective_tilt.toFixed(1) + '°' : '--';
+  tiltEl.className = 'stat-val' + (activeFaults.has('ANTENNA_STUCK') ? ' warn' : '');
+
+  setText('s-gain',  d.controls ? d.controls.gain + '%' : '--');
+  const cellCount = (d.cells || []).length;
+  setText('s-cells',   cellCount);
+  setText('s-words',   d.words_sent  || 0);
+  const corr = d.corrupt_count || 0;
+  const corrEl = document.getElementById('s-corrupt');
+  corrEl.textContent = corr;
+  corrEl.className = 'stat-val' + (corr > 0 ? ' fault' : ' ok');
+  const dropEl = document.getElementById('s-drop');
+  dropEl.textContent = (d.dropout_pct || 0) + '%';
+  dropEl.className = 'stat-val' + ((d.dropout_pct || 0) > 5 ? ' warn' : '');
+  setText('s-hdg',  d.aircraft ? Math.round(d.aircraft.heading_deg) + '°' : '--');
+  setText('s-alt',  d.aircraft ? Math.round(d.aircraft.altitude_ft).toLocaleString() + ' ft' : '--');
+
+  const fc = activeFaults.size;
+  const fcEl = document.getElementById('s-faultcount');
+  fcEl.textContent = fc || 'NONE';
+  fcEl.className = 'stat-val' + (fc > 0 ? ' fault' : '');
+
+  const ssmEl = document.getElementById('s-ssm');
+  if (activeFaults.has('MODE_MISMATCH')) { ssmEl.textContent = 'MODE MISMATCH'; ssmEl.className = 'stat-val fault'; }
+  else if (activeFaults.has('BIT_FLIP')) { ssmEl.textContent = 'DATA INVALID'; ssmEl.className = 'stat-val fault'; }
+  else if (activeFaults.size > 0)        { ssmEl.textContent = 'CAUTION'; ssmEl.className = 'stat-val warn'; }
+  else                                   { ssmEl.textContent = 'NORMAL OP'; ssmEl.className = 'stat-val ok'; }
+
+  if (d.cells) { currentCells = d.cells; renderCellList(d.cells); }
+}
+
+function updateFaultBar() {
+  const bar = document.getElementById('t-fault-bar');
+  if (activeFaults.size > 0) {
+    bar.style.display = '';
+    setText('t-faults', [...activeFaults].join(' | '));
+  } else {
+    bar.style.display = 'none';
+  }
+}
+
+// ── PPI Radar ─────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('ppi');
+const ctx    = canvas.getContext('2d');
+let lastSweep = 0;
+let lastCells = [];
+
+function renderPPI(data) {
+  lastSweep = data.sweep_angle || 0;
+  if (data.cells) lastCells = data.cells;
+  drawPPI();
+}
+
+function drawPPI() {
+  const W = 680, cx = 340, cy = 340, R = 300;
+  ctx.clearRect(0, 0, W, W);
+
+  // Background
+  ctx.fillStyle = '#060c12';
+  ctx.beginPath(); ctx.arc(cx, cy, R+6, 0, Math.PI*2); ctx.fill();
+
+  // Range rings
+  for (let i = 1; i <= 4; i++) {
+    const rr = R * i / 4;
+    ctx.beginPath(); ctx.arc(cx, cy, rr, 0, Math.PI*2);
+    ctx.strokeStyle = 'rgba(0,180,60,.15)'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.fillStyle = 'rgba(0,180,60,.4)'; ctx.font = '11px Consolas';
+    ctx.fillText('range ring', cx + rr * .7, cy - 4);
+  }
+
+  // Az lines every 30°
+  for (let a = 0; a < 360; a += 30) {
+    const r = (a - 90) * Math.PI / 180;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + R * Math.cos(r), cy + R * Math.sin(r));
+    ctx.strokeStyle = 'rgba(0,100,40,.18)'; ctx.lineWidth = .5; ctx.stroke();
+    // Az label
+    const lr = R * 1.04;
+    ctx.fillStyle = 'rgba(0,180,60,.5)'; ctx.font = '10px Consolas';
+    ctx.fillText(a + '°', cx + lr * Math.cos(r) - 10, cy + lr * Math.sin(r) + 4);
+  }
+
+  // Weather cells
+  lastCells.forEach(cell => {
+    const azRad = (cell.azimuth_deg - 90) * Math.PI / 180;
+    const rangeFrac = Math.min(1, cell.range_nm / (currentRangeNm()));
+    const cr = R * rangeFrac;
+    const px = cx + cr * Math.cos(azRad);
+    const py = cy + cr * Math.sin(azRad);
+    const color = cell.color || '#00e050';
+    const blobR = Math.max(12, R * 0.055);
+
+    // Glow
+    const grd = ctx.createRadialGradient(px, py, 0, px, py, blobR * 1.8);
+    grd.addColorStop(0, color + 'cc');
+    grd.addColorStop(.5, color + '66');
+    grd.addColorStop(1, color + '00');
+    ctx.beginPath(); ctx.arc(px, py, blobR * 1.8, 0, Math.PI*2);
+    ctx.fillStyle = grd; ctx.fill();
+
+    // Core
+    ctx.beginPath(); ctx.arc(px, py, blobR, 0, Math.PI*2);
+    ctx.fillStyle = color + 'aa'; ctx.fill();
+
+    if (cell.phantom) {
+      ctx.beginPath(); ctx.arc(px, py, blobR + 5, 0, Math.PI*2);
+      ctx.strokeStyle = '#a855f7'; ctx.lineWidth = 2; ctx.stroke();
+    }
+
+    // Label
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 10px Consolas';
+    ctx.fillText(cell.cell_name || '', px + blobR + 3, py - 2);
+    ctx.fillStyle = '#aaa'; ctx.font = '9px Consolas';
+    ctx.fillText(cell.dbz.toFixed(0) + ' dBZ', px + blobR + 3, py + 9);
+  });
+
+  // Sweep line
+  const swRad = (lastSweep - 90) * Math.PI / 180;
+  // Afterglow
+  for (let off = 35; off > 0; off -= 5) {
+    const aRad = (lastSweep - off - 90) * Math.PI / 180;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + R * Math.cos(aRad), cy + R * Math.sin(aRad));
+    ctx.strokeStyle = `rgba(0,212,80,${0.03 * (1 - off/35)})`;
+    ctx.lineWidth = 2; ctx.stroke();
+  }
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.lineTo(cx + R * Math.cos(swRad), cy + R * Math.sin(swRad));
+  ctx.strokeStyle = '#00d450'; ctx.lineWidth = 2; ctx.stroke();
+
+  // Aircraft symbol
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(cx, cy-12); ctx.lineTo(cx, cy+12); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx-12, cy); ctx.lineTo(cx+12, cy); ctx.stroke();
+
+  // Fault banners
+  let bannerY = cy + R - 16;
+  if (activeFaults.has('LATENCY')) {
+    drawBanner('⚠ BUS LATENCY +2.1s — PICTURE MAY BE STALE', '#f0a500', cx, bannerY); bannerY -= 22; }
+  if (activeFaults.has('ANTENNA_STUCK')) {
+    drawBanner('⚠ ANTENNA TILT STUCK +5.0°', '#dc2020', cx, bannerY); bannerY -= 22; }
+  if (activeFaults.has('MODE_MISMATCH')) {
+    drawBanner('⚠ MODE MISMATCH — DATA INVALID', '#dc2020', cx, bannerY); bannerY -= 22; }
+  if (activeFaults.has('WORD_DROPOUT')) {
+    drawBanner('⚠ WORD DROPOUT ACTIVE — BLANK SECTORS', '#f08214', cx, bannerY); }
+
+  // Empty state hint
+  if (lastCells.length === 0) {
+    ctx.fillStyle = 'rgba(90,104,128,.7)'; ctx.font = '14px Consolas';
+    ctx.textAlign = 'center';
+    ctx.fillText('No weather cells — use "Add Cell" tab', cx, cy + 30);
+    ctx.fillText('to add live radar returns', cx, cy + 50);
+    ctx.textAlign = 'left';
+  }
+}
+
+function drawBanner(msg, color, cx, y) {
+  ctx.font = 'bold 12px Consolas';
+  const w = ctx.measureText(msg).width + 16;
+  ctx.fillStyle = 'rgba(0,0,0,.75)';
+  ctx.fillRect(cx - w/2, y - 14, w, 18);
+  ctx.fillStyle = color;
+  ctx.textAlign = 'center'; ctx.fillText(msg, cx, y); ctx.textAlign = 'left';
+}
+
+function currentRangeNm() {
+  // Read from last known controls or default
+  const el = document.getElementById('p-range');
+  return el ? parseInt(el.value) : 160;
+}
+
+// Animate PPI even when no sweep events (fallback)
+setInterval(drawPPI, 33);
+
+// ── Bus Monitor ───────────────────────────────────────────────────────────────
+function addBusWord(w) {
+  const corrupt = w.corrupt;
+  const phantom = w.label_name === 'PHANTOM_CELL';
+  const isFault = w.label_name === 'FAULT';
+  const cls = corrupt ? 'corrupt' : phantom ? 'phantom' : isFault ? 'fault-w' : '';
+
+  const bits = w.binary || '0'.repeat(32);
+  const html = `<div class="bword ${cls}">
+    <span class="lbl-badge">${w.label_octal || '???'}</span>
+    <span style="min-width:100px;font-size:11px;color:var(--white)">${w.label_name}</span>
+    <span>
+      <span class="b-label">${bits.slice(0,8)}</span>
+      <span class="b-sdi">${bits.slice(8,10)}</span>
+      <span class="b-data">${bits.slice(10,29)}</span>
+      <span class="b-ssm">${bits.slice(29,31)}</span>
+      <span class="b-par">${bits.slice(31)}</span>
+    </span>
+    <span style="margin-left:auto;font-size:10px;color:var(--gray)">${w.hex}</span>
+  </div>`;
+
+  busLogLines.unshift(html);
+  if (busLogLines.length > MAX_BUS) busLogLines.pop();
+
+  if (document.getElementById('tab-bus').classList.contains('active')) {
+    document.getElementById('bus-log').innerHTML = busLogLines.slice(0,30).join('');
+  }
+}
+function clearBusLog() { busLogLines = []; document.getElementById('bus-log').innerHTML = ''; }
+
+// ── Cell list rendering ───────────────────────────────────────────────────────
+function renderCellList(cells) {
+  const el = document.getElementById('live-cell-list');
+  if (!cells || cells.length === 0) {
+    el.innerHTML = '<div style="color:var(--gray);font-size:11px">No active cells — add one in "Add Cell" tab</div>';
+    return;
+  }
+  el.innerHTML = cells.map(c => `
+    <div class="cell-item">
+      <span class="cell-dot" style="background:${c.color || '#00e050'}"></span>
+      <div class="cell-info">
+        <div class="cell-name">${c.cell_name || 'Cell'} ${c.phantom ? '<span style="color:var(--purple)">[PHANTOM]</span>':''}</div>
+        <div class="cell-meta">Az ${c.azimuth_deg.toFixed(1)}°  ·  ${c.range_nm.toFixed(0)} nm  ·  ${c.dbz.toFixed(1)} dBZ  ·  ${c.intensity}  ·  added by ${c.added_by || '?'}</div>
+      </div>
+      ${c.phantom ? '' : `<button class="cell-del" onclick="removeCell(${c.id})" title="Remove">✕</button>`}
+    </div>`).join('');
+}
+
+// ── Fault buttons ─────────────────────────────────────────────────────────────
+function syncFaultButtons(activeFaultNames) {
+  activeFaults = new Set(activeFaultNames);
+  ['BIT_FLIP','WORD_DROPOUT','LATENCY','PHANTOM_ECHO','ANTENNA_STUCK','MODE_MISMATCH'].forEach(f => {
+    const btn = document.getElementById('fb-' + f);
+    if (btn) btn.className = 'fault-btn' + (activeFaults.has(f) ? ' active' : '');
+  });
+  updateFaultBar();
+}
+
+function addFaultLog(ev) {
+  const log = document.getElementById('fault-log');
+  const t = new Date(ev.timestamp * 1000).toLocaleTimeString();
+  const color = ev.action === 'activate' ? 'var(--red)' : 'var(--green)';
+  log.innerHTML = `<div style="padding:3px 0;border-bottom:1px solid var(--border);color:${color}">
+    ${t}  ${ev.action.toUpperCase()}  ${ev.fault_type}  (by ${ev.triggered_by})
+  </div>` + log.innerHTML;
+}
+
+// ── API calls ─────────────────────────────────────────────────────────────────
+async function addCell() {
+  const body = {
+    cell_name:   document.getElementById('c-name').value || 'Cell',
+    azimuth_deg: parseFloat(document.getElementById('c-az').value),
+    range_nm:    parseFloat(document.getElementById('c-rng').value),
+    dbz:         parseFloat(document.getElementById('c-dbz').value),
+    width_deg:   parseFloat(document.getElementById('c-w').value),
+    altitude_ft: parseFloat(document.getElementById('c-alt').value) || 25000,
+    added_by:    document.getElementById('c-by').value || 'operator',
+  };
+  const r = await fetch('/api/cell', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const d = await r.json();
+  if (d.ok) { toast('Cell added to radar ✓'); switchTab('live'); }
+  else toast('Error: ' + d.error, true);
+}
+
+async function removeCell(id) {
+  const r = await fetch('/api/cell/'+id, {method:'DELETE'});
+  const d = await r.json();
+  if (d.ok) toast('Cell removed');
+}
+
+async function saveAircraft() {
+  const body = {
+    heading_deg: parseFloat(document.getElementById('a-hdg').value),
+    pitch_deg:   parseFloat(document.getElementById('a-pitch').value),
+    roll_deg:    parseFloat(document.getElementById('a-roll').value),
+    altitude_ft: parseFloat(document.getElementById('a-alt').value),
+    airspeed_kt: parseFloat(document.getElementById('a-spd').value),
+  };
+  await fetch('/api/aircraft', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  toast('Aircraft params updated ✓');
+}
+
+async function saveControls() {
+  const body = {
+    mode:    document.getElementById('p-mode').value,
+    tilt_deg: parseFloat(document.getElementById('p-tilt').value),
+    gain:    parseInt(document.getElementById('p-gain').value),
+    range_nm: parseInt(document.getElementById('p-range').value),
+    auto_tilt: true,
+  };
+  await fetch('/api/controls', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  toast('Controls updated ✓');
+}
+
+async function toggleFault(name) {
+  const isActive = activeFaults.has(name);
+  const action = isActive ? 'deactivate' : 'activate';
+  await fetch('/api/fault', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ fault_type: name, action, triggered_by: 'operator' })
+  });
+}
+
+async function loadHistory() {
+  const [cellRes, faultRes] = await Promise.all([
+    fetch('/api/history/cells'), fetch('/api/history/faults')
+  ]);
+  const cells  = await cellRes.json();
+  const faults = await faultRes.json();
+
+  const ct = document.querySelector('#hist-cells tbody');
+  ct.innerHTML = cells.map(c => `<tr>
+    <td>${c.id}</td><td>${c.cell_name}</td>
+    <td>${parseFloat(c.azimuth_deg).toFixed(1)}°</td>
+    <td>${parseFloat(c.range_nm).toFixed(0)} nm</td>
+    <td>${parseFloat(c.dbz).toFixed(1)}</td>
+    <td>${c.added_by}</td>
+    <td style="color:${c.active?'var(--green)':'var(--red)'}">${c.active?'ACTIVE':'REMOVED'}</td>
+  </tr>`).join('');
+
+  const ft = document.querySelector('#hist-faults tbody');
+  ft.innerHTML = faults.map(f => `<tr>
+    <td>${new Date(f.created_at*1000).toLocaleTimeString()}</td>
+    <td>${f.fault_type}</td>
+    <td style="color:${f.action==='activate'?'var(--red)':'var(--green)'}">${f.action.toUpperCase()}</td>
+    <td>${f.triggered_by}</td>
+  </tr>`).join('');
+}
+
+// ── Utility ───────────────────────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach((t,i) => {
+    const names = ['live','cells','aircraft','faults','bus','history'];
+    t.classList.toggle('active', names[i] === name);
+  });
+  document.querySelectorAll('.tab-body').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-'+name).classList.add('active');
+  if (name === 'history') loadHistory();
+  if (name === 'bus') document.getElementById('bus-log').innerHTML = busLogLines.slice(0,30).join('');
+}
+
+function setText(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val;
+}
+
+function upd(id, val) { setText(id, val); }
+
+function updDbz(val) {
+  const colors = ['#00b4d8','#00b4d8','#00e050','#e6dc14','#f08214','#dc2828','#dc28dc'];
+  const idx = Math.min(6, Math.floor(parseInt(val) / 10));
+  const el = document.getElementById('c-dbz-v');
+  el.textContent = val;
+  el.style.color = colors[idx] || '#fff';
+}
+
+function clearCellForm() {
+  ['c-name','c-by'].forEach(id => { const e = document.getElementById(id); if(e) e.value=''; });
+  ['c-az','c-rng','c-dbz','c-w'].forEach(id => {
+    const e = document.getElementById(id);
+    if (e) { e.value = e.defaultValue || 0; }
+  });
+}
+
+function toast(msg, isWarn=false) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'show' + (isWarn ? ' warn-toast' : '');
+  setTimeout(() => t.className = '', 3000);
+}
+
+// Auto-load history when tab opened
+document.addEventListener('DOMContentLoaded', drawPPI);
+</script>
+</body>
+</html>
