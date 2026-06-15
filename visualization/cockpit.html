@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cockpit Receiver — ARINC 429</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #06090e;
+  color: #e0e6f0;
+  font-family: 'Consolas', monospace;
+  min-height: 100vh;
+  padding: 0;
+}
+
+.topbar {
+  background: #0d1520;
+  border-bottom: 1px solid #1e3048;
+  padding: 10px 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.logo { color: #00d090; font-size: 14px; font-weight: bold; letter-spacing: .06em; }
+.conn-dot { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; display: inline-block; margin-right: 4px; }
+.conn-dot.live { background: #00d090; animation: pulse 1.5s infinite; }
+@keyframes pulse { 0%,100%{opacity:1}50%{opacity:.4} }
+.conn-label { font-size: 11px; color: #5a6880; }
+.ml-auto { margin-left: auto; }
+.device-id { font-size: 11px; color: #5a6880; }
+
+.main { display: grid; grid-template-columns: 1fr 420px; gap: 0; height: calc(100vh - 46px); overflow: hidden; }
+
+/* Left - alert display */
+.alert-panel {
+  padding: 16px;
+  overflow-y: auto;
+  border-right: 1px solid #1e3048;
+}
+
+.no-signal {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 60%;
+  color: #2a3a50;
+  text-align: center;
+}
+.no-signal .big { font-size: 64px; margin-bottom: 12px; }
+.no-signal .lbl { font-size: 13px; }
+
+.alert-card {
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin-bottom: 12px;
+  border: 1px solid;
+  animation: slideIn .4s ease;
+}
+@keyframes slideIn { from{opacity:0;transform:translateY(-10px)} to{opacity:1;transform:translateY(0)} }
+
+.alert-header {
+  font-size: 16px;
+  font-weight: bold;
+  margin-bottom: 12px;
+}
+.alert-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.alert-val {
+  background: rgba(0,0,0,.3);
+  border-radius: 4px;
+  padding: 8px;
+  text-align: center;
+}
+.alert-val .lbl { font-size: 10px; color: #5a6880; }
+.alert-val .num { font-size: 22px; font-weight: bold; font-family: Consolas; }
+
+.arinc-raw {
+  background: rgba(0,0,0,.3);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-size: 10px;
+  color: #5a6880;
+  margin-top: 8px;
+}
+.arinc-raw .bits { font-size: 11px; letter-spacing: .05em; margin-top: 3px; word-break: break-all; }
+.b-lbl { color: #3b82f6; }
+.b-sdi { color: #22c55e; }
+.b-dat { color: #f59e0b; }
+.b-ssm { color: #a855f7; }
+.b-par { color: #6b7280; }
+
+.time-tag { font-size: 10px; color: #5a6880; margin-top: 6px; }
+
+/* Right - ARINC decode panel */
+.decode-panel {
+  background: #0d1520;
+  padding: 14px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dpanel-title {
+  font-size: 11px;
+  color: #5a6880;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  margin-bottom: 4px;
+}
+
+.decode-card {
+  background: #121d2b;
+  border: 1px solid #1e3048;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.word-viz {
+  display: flex;
+  border-radius: 4px;
+  overflow: hidden;
+  font-size: 10px;
+  margin: 8px 0;
+}
+.wf { padding: 6px 0; text-align: center; }
+.wf-lbl  { background: rgba(59,130,246,.2); color: #3b82f6; flex: 0 0 68px; }
+.wf-sdi  { background: rgba(34,197,94,.2); color: #22c55e; flex: 0 0 32px; }
+.wf-dat  { background: rgba(245,158,11,.2); color: #f59e0b; flex: 1; }
+.wf-ssm  { background: rgba(168,85,247,.2); color: #a855f7; flex: 0 0 32px; }
+.wf-par  { background: rgba(107,114,128,.2); color: #6b7280; flex: 0 0 24px; }
+.wf span { font-size: 8px; display: block; opacity: .7; }
+
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: .5px solid #1e3048;
+  font-size: 11px;
+}
+.field-row:last-child { border: none; }
+.fn { min-width: 70px; color: #5a6880; }
+.fv { color: #e0e6f0; font-weight: 500; }
+.fb { margin-left: auto; font-size: 10px; }
+
+.stat-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.stat-pill {
+  background: #1a2535;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: #5a6880;
+}
+.stat-pill span { color: #e0e6f0; }
+
+canvas#wave {
+  width: 100%;
+  height: 60px;
+  background: #06090e;
+  border-radius: 4px;
+  display: block;
+}
+
+.rx-log {
+  font-size: 10px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.rx-entry {
+  padding: 2px 4px;
+  border-bottom: .5px solid #1e3048;
+  display: flex;
+  gap: 8px;
+  color: #5a6880;
+}
+.rx-entry .rxt { color: #00d090; }
+.rx-entry .rxh { color: #f59e0b; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="logo">⬡ COCKPIT RECEIVER — ARINC 429 BUS</div>
+  <div><span class="conn-dot" id="cdot"></span><span class="conn-label" id="clbl">CONNECTING...</span></div>
+  <div class="ml-auto device-id" id="device-id">Device: --</div>
+</div>
+
+<div class="main">
+
+  <!-- LEFT: Alert display -->
+  <div class="alert-panel" id="alert-panel">
+    <div class="no-signal" id="no-signal">
+      <div class="big">📡</div>
+      <div class="lbl">Waiting for ARINC 429 transmission...<br><br>
+        Keep this page open on any device.<br>
+        When sender transmits, data appears here instantly.
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: Decode panel -->
+  <div class="decode-panel">
+
+    <div>
+      <div class="dpanel-title">Last received word</div>
+      <div class="decode-card">
+        <div class="word-viz" id="word-viz">
+          <div class="wf wf-lbl"><span>LABEL</span>--------</div>
+          <div class="wf wf-sdi"><span>SDI</span>--</div>
+          <div class="wf wf-dat"><span>DATA (19 bits)</span>-------------------</div>
+          <div class="wf wf-ssm"><span>SSM</span>--</div>
+          <div class="wf wf-par"><span>P</span>-</div>
+        </div>
+        <div id="field-rows">
+          <div class="field-row"><span class="fn">Label</span><span class="fv">--</span></div>
+          <div class="field-row"><span class="fn">SDI</span><span class="fv">--</span></div>
+          <div class="field-row"><span class="fn">Azimuth</span><span class="fv">--</span></div>
+          <div class="field-row"><span class="fn">Range</span><span class="fv">--</span></div>
+          <div class="field-row"><span class="fn">dBZ</span><span class="fv">--</span></div>
+          <div class="field-row"><span class="fn">SSM</span><span class="fv">--</span></div>
+          <div class="field-row"><span class="fn">Parity</span><span class="fv">--</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="dpanel-title">Bus waveform (NRZ)</div>
+      <div class="decode-card" style="padding:8px">
+        <canvas id="wave" width="380" height="60"></canvas>
+      </div>
+    </div>
+
+    <div>
+      <div class="dpanel-title">Session stats</div>
+      <div class="decode-card">
+        <div class="stat-row">
+          <div class="stat-pill">Words RX: <span id="st-words">0</span></div>
+          <div class="stat-pill">Alerts: <span id="st-alerts">0</span></div>
+          <div class="stat-pill">Corrupt: <span id="st-corrupt">0</span></div>
+          <div class="stat-pill">Devices: <span id="st-devices">1</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="dpanel-title">Receive log</div>
+      <div class="decode-card" style="padding:8px">
+        <div class="rx-log" id="rx-log"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+const socket = io();
+let rxCount = 0, alertCount = 0, corruptCount = 0;
+const myId = 'RX-' + Math.random().toString(36).substr(2,5).toUpperCase();
+document.getElementById('device-id').textContent = 'Device: ' + myId;
+
+socket.on('connect', () => {
+  document.getElementById('cdot').className = 'conn-dot live';
+  document.getElementById('clbl').textContent = 'LIVE — ' + myId;
+});
+socket.on('disconnect', () => {
+  document.getElementById('cdot').className = 'conn-dot';
+  document.getElementById('clbl').textContent = 'DISCONNECTED';
+});
+
+// ── Main event: cockpit transmission received ─────────────────────────────────
+socket.on('cockpit_rx', data => {
+  rxCount++;
+  document.getElementById('st-words').textContent = rxCount;
+
+  // Hide no-signal
+  document.getElementById('no-signal').style.display = 'none';
+
+  // Update decode panel
+  updateDecodePanel(data);
+
+  // Draw waveform
+  if(data.binary) drawWave(data.binary);
+
+  // Add alert card
+  addAlertCard(data);
+
+  // Add to log
+  addRxLog(data);
+});
+
+// Also receive live arinc words from bus
+socket.on('arinc_word', data => {
+  rxCount++;
+  document.getElementById('st-words').textContent = rxCount;
+  if(data.corrupt) {
+    corruptCount++;
+    document.getElementById('st-corrupt').textContent = corruptCount;
+  }
+  addRxLog(data);
+});
+
+function updateDecodePanel(data) {
+  const bits = data.binary || '0'.repeat(32);
+  // Word viz
+  document.getElementById('word-viz').innerHTML = `
+    <div class="wf wf-lbl"><span>LABEL(8)</span>${bits.slice(24)}</div>
+    <div class="wf wf-sdi"><span>SDI</span>${bits.slice(22,24)}</div>
+    <div class="wf wf-dat"><span>DATA (19 bits)</span>${bits.slice(3,22)}</div>
+    <div class="wf wf-ssm"><span>SSM</span>${bits.slice(1,3)}</div>
+    <div class="wf wf-par"><span>P</span>${bits[0]}</div>`;
+
+  const ssmNames = ['FAILURE','NO DATA','TEST','NORMAL'];
+  const ssmColors = ['#ef4444','#f59e0b','#f59e0b','#00d090'];
+  const ssm = data.ssm || 'NORMAL_OPERATION';
+  const ssmIdx = ssm.includes('NORMAL') ? 3 : ssm.includes('FAIL') ? 0 : ssm.includes('TEST') ? 2 : 1;
+
+  document.getElementById('field-rows').innerHTML = `
+    <div class="field-row">
+      <span class="fn">Label</span>
+      <span class="fv" style="color:#3b82f6">${data.label_octal || '270'} (oct) = WEATHER_CELL</span>
+    </div>
+    <div class="field-row">
+      <span class="fn">SDI</span>
+      <span class="fv" style="color:#22c55e">${['LRU-1','LRU-2','LRU-3','BCAST'][data.sdi||0]}</span>
+    </div>
+    <div class="field-row">
+      <span class="fn">Azimuth</span>
+      <span class="fv" style="color:#00d090">${data.azimuth || '--'}°</span>
+      <span class="fb" style="color:#5a6880">bearing</span>
+    </div>
+    <div class="field-row">
+      <span class="fn">Range</span>
+      <span class="fv" style="color:#3b82f6">${data.range_nm || '--'} nm</span>
+      <span class="fb" style="color:#5a6880">distance</span>
+    </div>
+    <div class="field-row">
+      <span class="fn">dBZ</span>
+      <span class="fv" style="color:${dbzColor(data.dbz||0)}">${data.dbz || '--'} dBZ</span>
+      <span class="fb" style="color:#5a6880">${data.intensity||''}</span>
+    </div>
+    <div class="field-row">
+      <span class="fn">SSM</span>
+      <span class="fv" style="color:${ssmColors[ssmIdx]}">${ssmNames[ssmIdx]}</span>
+    </div>
+    <div class="field-row">
+      <span class="fn">Hex</span>
+      <span class="fv" style="color:#f59e0b">${data.hex || '--'}</span>
+    </div>`;
+}
+
+function addAlertCard(data) {
+  alertCount++;
+  document.getElementById('st-alerts').textContent = alertCount;
+
+  const dbz = data.dbz || 0;
+  const az  = data.azimuth || 0;
+  const rng = data.range_nm || 0;
+  const bits = data.binary || '0'.repeat(32);
+
+  let col, bg, brd, icon, title, msg;
+  if(data.ssm && (data.ssm.includes('FAIL'))) {
+    col='#ef4444'; bg='rgba(239,68,68,.08)'; brd='rgba(239,68,68,.4)';
+    icon='⛔'; title='RADAR FAILURE — DATA INVALID';
+    msg='SSM = FAILURE WARNING. Word rejected by display unit.';
+  } else if(dbz >= 55) {
+    col='#ef4444'; bg='rgba(239,68,68,.08)'; brd='rgba(239,68,68,.5)';
+    icon='🔴'; title='SEVERE THUNDERSTORM — DEVIATE NOW';
+    msg='Extreme convective activity. Hail and severe turbulence probable. Immediate deviation recommended.';
+  } else if(dbz >= 40) {
+    col='#f08214'; bg='rgba(240,130,20,.08)'; brd='rgba(240,130,20,.5)';
+    icon='🟠'; title='HEAVY PRECIPITATION — CAUTION';
+    msg='Significant rain return. Moderate to severe turbulence possible.';
+  } else if(dbz >= 30) {
+    col='#e6dc14'; bg='rgba(230,220,20,.08)'; brd='rgba(230,220,20,.4)';
+    icon='🟡'; title='MODERATE PRECIPITATION — MONITOR';
+    msg='Light to moderate rain. Mild turbulence possible.';
+  } else {
+    col='#00d090'; bg='rgba(0,208,144,.08)'; brd='rgba(0,208,144,.3)';
+    icon='🟢'; title='LIGHT PRECIPITATION — NO ACTION';
+    msg='Light drizzle or cloud returns. No significant hazard.';
+  }
+
+  const t = new Date().toLocaleTimeString();
+  const sender = data.sender || 'LRU-1';
+
+  const card = document.createElement('div');
+  card.className = 'alert-card';
+  card.style.cssText = `background:${bg};border-color:${brd}`;
+  card.innerHTML = `
+    <div class="alert-header" style="color:${col}">${icon} ${title}</div>
+    <div style="font-size:10px;color:#5a6880;margin-bottom:10px">
+      From: <span style="color:#00d090">${sender}</span> &nbsp;|&nbsp;
+      Received: <span style="color:#5a6880">${t}</span> &nbsp;|&nbsp;
+      Device: <span style="color:#5a6880">${myId}</span>
+    </div>
+    <div class="alert-grid">
+      <div class="alert-val">
+        <div class="lbl">BEARING</div>
+        <div class="num" style="color:${col}">${String(az).padStart(3,'0')}°</div>
+      </div>
+      <div class="alert-val">
+        <div class="lbl">DISTANCE</div>
+        <div class="num" style="color:${col}">${rng} NM</div>
+      </div>
+      <div class="alert-val">
+        <div class="lbl">INTENSITY</div>
+        <div class="num" style="color:${col}">${dbz} dBZ</div>
+      </div>
+    </div>
+    <div style="color:#5a6880;font-size:11px;margin-bottom:8px;line-height:1.6">${msg}</div>
+    <div class="arinc-raw">
+      <div>ARINC 429 word received (32-bit):</div>
+      <div class="bits">
+        <span style="color:#6b7280">${bits[0]}</span>
+        <span style="color:#a855f7">${bits.slice(1,3)}</span>
+        <span style="color:#f59e0b">${bits.slice(3,22)}</span>
+        <span style="color:#22c55e">${bits.slice(22,24)}</span>
+        <span style="color:#3b82f6">${bits.slice(24)}</span>
+      </div>
+      <div style="margin-top:4px">HEX: <span style="color:#f59e0b">${data.hex||'--'}</span></div>
+    </div>`;
+
+  const panel = document.getElementById('alert-panel');
+  panel.insertBefore(card, panel.firstChild);
+
+  // Keep max 20 alerts
+  const cards = panel.querySelectorAll('.alert-card');
+  if(cards.length > 20) cards[cards.length-1].remove();
+}
+
+function addRxLog(data) {
+  const log = document.getElementById('rx-log');
+  const t = new Date().toLocaleTimeString();
+  const div = document.createElement('div');
+  div.className = 'rx-entry';
+  div.innerHTML = `
+    <span class="rxt">${t}</span>
+    <span class="rxh">${data.hex||'--'}</span>
+    <span>${data.label_name||data.label_octal||'--'}</span>
+    <span style="color:${data.corrupt?'#ef4444':'#00d090'}">${data.corrupt?'CORRUPT':'OK'}</span>`;
+  log.insertBefore(div, log.firstChild);
+  if(log.children.length > 50) log.lastChild.remove();
+}
+
+function drawWave(bits) {
+  const canvas = document.getElementById('wave');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle = '#06090e';
+  ctx.fillRect(0,0,W,H);
+
+  const bitW = W / 32;
+  const high = H * 0.15, low = H * 0.75;
+  const wireOrder = bits.split('').reverse();
+  const colors = [];
+  for(let i=0;i<32;i++){
+    if(i<8) colors.push('#3b82f6');
+    else if(i<10) colors.push('#22c55e');
+    else if(i<29) colors.push('#f59e0b');
+    else if(i<31) colors.push('#a855f7');
+    else colors.push('#6b7280');
+  }
+  let prevY = wireOrder[0]==='1'?high:low;
+  for(let i=0;i<32;i++){
+    const x1=i*bitW, x2=x1+bitW;
+    const y=wireOrder[i]==='1'?high:low;
+    ctx.strokeStyle=colors[i]; ctx.lineWidth=2;
+    ctx.beginPath();
+    if(y!==prevY){ctx.moveTo(x1,prevY);ctx.lineTo(x1,y);}
+    else{ctx.moveTo(x1,y);}
+    ctx.lineTo(x2,y); ctx.stroke();
+    ctx.fillStyle=colors[i]; ctx.font='8px Consolas';
+    ctx.fillText(wireOrder[i], x1+bitW/2-3, H-4);
+    prevY=y;
+  }
+}
+
+function dbzColor(dbz) {
+  if(dbz<20) return '#00b4d8';
+  if(dbz<30) return '#00e050';
+  if(dbz<40) return '#e6dc14';
+  if(dbz<50) return '#f08214';
+  if(dbz<55) return '#dc2828';
+  return '#dc28dc';
+}
+</script>
+</body>
+</html>
