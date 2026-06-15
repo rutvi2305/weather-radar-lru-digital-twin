@@ -216,7 +216,50 @@ def start_server(host='127.0.0.1', port=5000, debug=False):
     print(f"  Database file:         data/radar_twin.db")
     print(f"  Press Ctrl+C to stop")
     print(f"{'='*55}\n")
-    socketio.run(app, host=host, port=port, debug=debug, use_reloader=False)
+    socketio.run(app, host='0.0.0.0', port=port, debug=debug, use_reloader=False, allow_unsafe_werkzeug=True)
+@app.route('/api/transmit', methods=['POST'])
+def transmit_to_cockpit():
+    data = request.json
+    try:
+        word_payload = {
+            'hex':        data.get('hex', ''),
+            'binary':     data.get('binary', ''),
+            'label':      data.get('label', 270),
+            'label_octal': data.get('label_octal', '270'),
+            'label_name': 'WEATHER_CELL',
+            'sdi':        data.get('sdi', 0),
+            'ssm':        data.get('ssm', 'NORMAL_OPERATION'),
+            'corrupt':    False,
+            'azimuth':    data.get('azimuth', 0),
+            'range_nm':   data.get('range_nm', 0),
+            'dbz':        data.get('dbz', 0),
+            'intensity':  data.get('intensity', ''),
+            'alert':      data.get('alert', ''),
+            'sender':     data.get('sender', 'LRU-1'),
+            'timestamp':  __import__('time').time(),
+            'type':       'COCKPIT_TRANSMISSION',
+        }
+        db.log_arinc_word(
+            label_octal  = data.get('label_octal', '270'),
+            label_name   = 'WEATHER_CELL_TX',
+            raw_hex      = data.get('hex', ''),
+            raw_binary   = data.get('binary', ''),
+            sdi          = data.get('sdi', 0),
+            data_field   = data.get('data_field', 0),
+            ssm          = data.get('ssm', 'NORMAL_OPERATION'),
+            parity_valid = True,
+            corrupt      = False,
+            session_id   = session_id,
+        )
+        socketio.emit('cockpit_rx', word_payload)
+        return jsonify({'ok': True, 'transmitted': word_payload})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+@app.route('/cockpit')
+def cockpit_page():
+    return send_from_directory(BASE_DIR, 'cockpit.html')
+
 
 if __name__ == '__main__':
     start_server()
