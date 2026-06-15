@@ -142,6 +142,16 @@
   #conn-status { font-size: 11px; }
   .connected { color: var(--green); }
   .disconnected { color: var(--red); }
+
+  /* Encoder tab full layout fix */
+#tab-encoder {
+  display: none;
+  height: calc(100vh - 70px);
+  overflow-y: auto;
+  padding: 10px;
+}
+#tab-encoder.active { display: block; }
+.shell { overflow: hidden; }
 </style>
 </head>
 <body>
@@ -176,6 +186,7 @@
       <div class="tab" onclick="switchTab('faults')">Faults</div>
       <div class="tab" onclick="switchTab('bus')">Bus Monitor</div>
       <div class="tab" onclick="switchTab('history')">History</div>
+      <div class="tab" onclick="switchTab('encoder')">Encoder</div>
     </div>
 
     <!-- LIVE STATUS TAB -->
@@ -391,6 +402,236 @@
       </div>
     </div>
 
+    <!-- ENCODER TAB -->
+    <div class="tab-body" id="tab-encoder">
+
+      <!-- Step 1: Input -->
+      <div class="card">
+        <div class="card-title">
+          <span style="color:#00d090">①</span> ARINC 429 ENCODER — Enter Raw Radar Data
+        </div>
+        <div style="font-size:11px;color:var(--color-text-secondary);margin-bottom:10px;line-height:1.6">
+          Enter real radar values below. The encoder converts them into a
+          32-bit ARINC 429 word exactly as the LRU hardware would transmit
+          on the bus wire at 100,000 bits per second.
+        </div>
+
+        <div class="form-row">
+          <label>Azimuth (0–360°)</label>
+          <input type="range" id="enc-az" min="0" max="359" step="1" value="90"
+            oninput="upd('enc-az-v', this.value+'°'); liveEncode()">
+          <span class="val-badge" id="enc-az-v" style="color:#00d090">90°</span>
+        </div>
+        <div class="form-row">
+          <label>Range (nm)</label>
+          <input type="range" id="enc-rng" min="10" max="320" step="5" value="40"
+            oninput="upd('enc-rng-v', this.value+' nm'); liveEncode()">
+          <span class="val-badge" id="enc-rng-v" style="color:#3b82f6">40 nm</span>
+        </div>
+        <div class="form-row">
+          <label>Reflectivity (dBZ)</label>
+          <input type="range" id="enc-dbz" min="10" max="70" step="1" value="62"
+            oninput="updEncDbz(this.value); liveEncode()">
+          <span class="val-badge" id="enc-dbz-v" style="color:#dc2828">62</span>
+        </div>
+        <div class="form-row">
+          <label>SDI (0–3)</label>
+          <select id="enc-sdi" onchange="liveEncode()"
+            style="background:var(--color-background-secondary);border:1px solid var(--color-border-tertiary);border-radius:4px;color:var(--color-text-primary);font-family:var(--font-mono);font-size:12px;padding:4px 8px;flex:1">
+            <option value="0">00 — LRU 1</option>
+            <option value="1">01 — LRU 2</option>
+            <option value="2">10 — LRU 3</option>
+            <option value="3">11 — Broadcast</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>SSM Status</label>
+          <select id="enc-ssm" onchange="liveEncode()"
+            style="background:var(--color-background-secondary);border:1px solid var(--color-border-tertiary);border-radius:4px;color:var(--color-text-primary);font-family:var(--font-mono);font-size:12px;padding:4px 8px;flex:1">
+            <option value="3">11 — Normal Operation</option>
+            <option value="2">10 — Functional Test</option>
+            <option value="1">01 — No Computed Data</option>
+            <option value="0">00 — Failure Warning</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Step 2: Encoding breakdown -->
+      <div class="card">
+        <div class="card-title">
+          <span style="color:#3b82f6">②</span> ENCODING BREAKDOWN — How the 32-bit word is built
+        </div>
+
+        <div style="font-size:11px;color:var(--color-text-secondary);margin-bottom:8px;line-height:1.6">
+          Each value is packed into a specific bit range. The 19-bit data
+          field holds azimuth (7 bits) + range (6 bits) + dBZ (6 bits).
+        </div>
+
+        <!-- Bit field breakdown table -->
+        <div style="font-size:11px;font-family:var(--font-mono);margin-bottom:10px">
+          <div style="display:flex;gap:4px;margin-bottom:4px;font-size:10px;color:var(--color-text-secondary)">
+            <div style="flex:0 0 80px">Field</div>
+            <div style="flex:0 0 60px">Bits</div>
+            <div style="flex:0 0 70px">Raw value</div>
+            <div style="flex:1">Binary</div>
+          </div>
+          <div id="enc-breakdown">
+            <!-- filled by JS -->
+          </div>
+        </div>
+
+        <!-- The full 32-bit word visualized -->
+        <div style="font-size:10px;color:var(--color-text-secondary);margin-bottom:4px">Full 32-bit word (bit 32 on left):</div>
+        <div id="enc-word-viz" style="display:flex;border-radius:4px;overflow:hidden;font-size:11px;font-family:var(--font-mono);margin-bottom:10px">
+          <!-- filled by JS -->
+        </div>
+
+        <!-- Hex and binary -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+          <div style="background:var(--color-background-secondary);border-radius:4px;padding:10px 12px">
+            <div style="font-size:10px;color:var(--color-text-secondary);margin-bottom:4px">HEX</div>
+            <div id="enc-hex" style="font-size:20px;font-weight:bold;color:#00d090;font-family:var(--font-mono)">--</div>
+          </div>
+          <div style="background:var(--color-background-secondary);border-radius:4px;padding:10px 12px">
+            <div style="font-size:10px;color:var(--color-text-secondary);margin-bottom:4px">DECIMAL</div>
+            <div id="enc-dec" style="font-size:20px;font-weight:bold;color:#3b82f6;font-family:var(--font-mono)">--</div>
+          </div>
+        </div>
+        <div style="background:var(--color-background-secondary);border-radius:4px;padding:10px 12px">
+          <div style="font-size:10px;color:var(--color-text-secondary);margin-bottom:6px">BINARY (32 bits) — colour coded by field</div>
+          <div id="enc-binary-display" style="font-size:12px;font-family:var(--font-mono);word-break:break-all;line-height:1.8;letter-spacing:.05em">--</div>
+        </div>
+      </div>
+
+      <!-- Step 3: Bus transmission animation -->
+      <div class="card">
+        <div class="card-title">
+          <span style="color:#f59e0b">③</span> BUS TRANSMISSION — Word sent on ARINC 429 wire
+        </div>
+        <div style="font-size:11px;color:var(--color-text-secondary);margin-bottom:8px;line-height:1.6">
+          The 32-bit word is sent LSB-first at 100 kbps. Each bit takes
+          10 microseconds on the wire. Total transmission time = 320 µs.
+        </div>
+        <canvas id="bus-wave-canvas" width="560" height="70"
+          style="width:100%;border-radius:4px;background:#06090e;display:block"></canvas>
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--color-text-secondary);margin-top:4px">
+          <span>Bit 1 (LSB) →</span>
+          <span>← Bit 32 (Parity)</span>
+        </div>
+        <div style="margin-top:8px;font-size:11px;color:var(--color-text-secondary)">
+          Transmission speed:
+          <span style="color:#00d090">100,000 bits/sec (High Speed)</span>
+          &nbsp;|&nbsp; Word period:
+          <span style="color:#00d090">320 µs</span>
+        </div>
+      </div>
+
+      <!-- Step 4: Decoder output -->
+      <div class="card">
+        <div class="card-title">
+          <span style="color:#a855f7">④</span> RECEIVER DECODES — Extracting values from 32 bits
+        </div>
+        <div style="font-size:11px;color:var(--color-text-secondary);margin-bottom:10px;line-height:1.6">
+          The cockpit display unit (ND/MFD) receives the raw 32-bit word,
+          reads the label to identify data type, checks SSM for validity,
+          verifies parity, then extracts each field.
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px">
+          <div style="background:var(--color-background-secondary);border-radius:4px;padding:9px 12px">
+            <div style="font-size:10px;color:var(--color-text-secondary)">Label read</div>
+            <div id="dec-label" style="font-size:14px;font-weight:bold;color:#3b82f6;font-family:var(--font-mono)">270 (octal)</div>
+            <div style="font-size:10px;color:var(--color-text-secondary);margin-top:2px">= WEATHER_CELL</div>
+          </div>
+          <div style="background:var(--color-background-secondary);border-radius:4px;padding:9px 12px">
+            <div style="font-size:10px;color:var(--color-text-secondary)">Parity check</div>
+            <div id="dec-parity" style="font-size:14px;font-weight:bold;color:#00d090;font-family:var(--font-mono)">VALID ✓</div>
+            <div style="font-size:10px;color:var(--color-text-secondary);margin-top:2px">odd parity confirmed</div>
+          </div>
+          <div style="background:var(--color-background-secondary);border-radius:4px;padding:9px 12px">
+            <div style="font-size:10px;color:var(--color-text-secondary)">SSM status</div>
+            <div id="dec-ssm-out" style="font-size:14px;font-weight:bold;color:#00d090;font-family:var(--font-mono)">NORMAL OP</div>
+          </div>
+          <div style="background:var(--color-background-secondary);border-radius:4px;padding:9px 12px">
+            <div style="font-size:10px;color:var(--color-text-secondary)">SDI source</div>
+            <div id="dec-sdi-out" style="font-size:14px;font-weight:bold;color:#22c55e;font-family:var(--font-mono)">LRU 1</div>
+          </div>
+        </div>
+
+        <!-- Decoded values -->
+        <div style="background:#0a1520;border:1px solid #1e3048;border-radius:6px;padding:14px 16px">
+          <div style="font-size:11px;color:var(--color-text-secondary);margin-bottom:10px;text-transform:uppercase;letter-spacing:.06em">Decoded radar data</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+            <div style="text-align:center">
+              <div style="font-size:10px;color:var(--color-text-secondary)">AZIMUTH</div>
+              <div id="dec-az" style="font-size:28px;font-weight:bold;color:#00d090;font-family:var(--font-mono)">90°</div>
+              <div style="font-size:10px;color:var(--color-text-secondary)">bearing</div>
+            </div>
+            <div style="text-align:center">
+              <div style="font-size:10px;color:var(--color-text-secondary)">RANGE</div>
+              <div id="dec-rng" style="font-size:28px;font-weight:bold;color:#3b82f6;font-family:var(--font-mono)">40 nm</div>
+              <div style="font-size:10px;color:var(--color-text-secondary)">distance</div>
+            </div>
+            <div style="text-align:center">
+              <div style="font-size:10px;color:var(--color-text-secondary)">REFLECTIVITY</div>
+              <div id="dec-dbz" style="font-size:28px;font-weight:bold;color:#dc2828;font-family:var(--font-mono)">62 dBZ</div>
+              <div style="font-size:10px;color:var(--color-text-secondary)">intensity</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5: Cockpit alert + Send button -->
+      <div class="card">
+        <div class="card-title">
+          <span style="color:#ef4444">⑤</span> COCKPIT DISPLAY UNIT — Alert Generated
+        </div>
+        <div id="cockpit-alert-box" style="border-radius:6px;padding:14px 16px;border:1px solid #1e3048">
+        </div>
+
+        <div style="margin-top:12px;display:flex;gap:10px;align-items:center">
+          <div class="form-row" style="flex:1;margin:0">
+            <label style="min-width:70px">Your ID</label>
+            <input type="text" id="enc-sender" value="LRU-1" placeholder="e.g. LRU-1"
+              style="background:var(--color-background-secondary);border:1px solid var(--color-border-tertiary);border-radius:4px;color:var(--color-text-primary);font-family:var(--font-mono);font-size:12px;padding:4px 8px;flex:1">
+          </div>
+          <button onclick="sendToCockpit()"
+            style="padding:8px 20px;background:rgba(0,208,144,.15);border:1px solid #00d090;border-radius:5px;color:#00d090;font-family:var(--font-mono);font-size:12px;cursor:pointer;white-space:nowrap;flex-shrink:0">
+            📡 Transmit to All Cockpits
+          </button>
+        </div>
+
+        <div id="tx-status" style="margin-top:8px;font-size:11px;display:none;padding:6px 10px;border-radius:4px"></div>
+
+        <div style="margin-top:10px;font-size:11px;color:var(--color-text-secondary);line-height:1.7">
+          Any device at
+          <span style="color:#00d090" id="rx-url">http://YOUR_IP:5000/cockpit</span>
+          will receive this ARINC 429 word and display the decoded alert.
+        </div>
+      </div>
+
+      <!-- Step 6: Full loop summary -->
+      <div class="card">
+        <div class="card-title">⑥ FULL DATA FLOW LOOP</div>
+        <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;font-size:11px">
+          <div style="background:rgba(0,208,144,.1);border:1px solid rgba(0,208,144,.3);border-radius:4px;padding:5px 10px;color:#00d090">Radar HW</div>
+          <div style="color:var(--color-text-secondary)">→</div>
+          <div style="background:rgba(59,130,246,.1);border:1px solid rgba(59,130,246,.3);border-radius:4px;padding:5px 10px;color:#3b82f6">LRU Encoder</div>
+          <div style="color:var(--color-text-secondary)">→</div>
+          <div style="background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:4px;padding:5px 10px;color:#f59e0b">32-bit Word</div>
+          <div style="color:var(--color-text-secondary)">→</div>
+          <div style="background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:4px;padding:5px 10px;color:#f59e0b">ARINC Bus</div>
+          <div style="color:var(--color-text-secondary)">→</div>
+          <div style="background:rgba(168,85,247,.1);border:1px solid rgba(168,85,247,.3);border-radius:4px;padding:5px 10px;color:#a855f7">LRU Decoder</div>
+          <div style="color:var(--color-text-secondary)">→</div>
+          <div style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:4px;padding:5px 10px;color:#ef4444">Cockpit Alert</div>
+          <div style="color:var(--color-text-secondary)">→</div>
+          <div style="background:rgba(0,208,144,.1);border:1px solid rgba(0,208,144,.3);border-radius:4px;padding:5px 10px;color:#00d090">Pilot Action</div>
+        </div>
+      </div>
+
+    </div><!-- /encoder tab -->
+    
   </div><!-- /right -->
 </div><!-- /shell -->
 
@@ -793,13 +1034,21 @@ async function loadHistory() {
 // ── Utility ───────────────────────────────────────────────────────────────────
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach((t,i) => {
-    const names = ['live','cells','aircraft','faults','bus','history'];
+    const names = ['live','cells','aircraft','faults','bus','history','encoder'];
     t.classList.toggle('active', names[i] === name);
   });
-  document.querySelectorAll('.tab-body').forEach(b => b.classList.remove('active'));
-  document.getElementById('tab-'+name).classList.add('active');
-  if (name === 'history') loadHistory();
-  if (name === 'bus') document.getElementById('bus-log').innerHTML = busLogLines.slice(0,30).join('');
+  document.querySelectorAll('.tab-body').forEach(b => {
+    b.classList.remove('active');
+    b.style.display = 'none';
+  });
+  const active = document.getElementById('tab-' + name);
+  if(active) {
+    active.classList.add('active');
+    active.style.display = 'block';
+  }
+  if(name === 'history') loadHistory();
+  if(name === 'bus') document.getElementById('bus-log').innerHTML = busLogLines.slice(0,30).join('');
+  if(name === 'encoder') initEncoder();
 }
 
 function setText(id, val) {
@@ -834,6 +1083,355 @@ function toast(msg, isWarn=false) {
 
 // Auto-load history when tab opened
 document.addEventListener('DOMContentLoaded', drawPPI);
+
+// ── ENCODER TAB LOGIC ────────────────────────────────────────────────────────
+
+function updEncDbz(val) {
+  const colors = ['#00b4d8','#00b4d8','#00e050','#e6dc14','#f08214','#dc2828','#dc28dc'];
+  const idx = Math.min(6, Math.floor(parseInt(val) / 10));
+  const el = document.getElementById('enc-dbz-v');
+  if(el){ el.textContent = val; el.style.color = colors[idx] || '#fff'; }
+}
+
+function calcOddParity(word31) {
+  let ones = 0;
+  for(let i = 0; i < 31; i++) ones += (word31 >> i) & 1;
+  return (ones % 2 === 0) ? 1 : 0;
+}
+
+function encodeARINC(az, rng, dbz, sdi, ssmVal) {
+  // Label 270 (octal) = 0b10111000 reversed = 0b00011101 = 29 decimal
+  const labelOctal = 0o270;  // 184 decimal
+  // Reverse label bits for transmission (ARINC spec)
+  const labelBin = (184).toString(2).padStart(8,'0');
+  const labelRev = parseInt(labelBin.split('').reverse().join(''), 2);
+
+  // Pack 19-bit data field: az(7) + range(6) + dbz(6)
+  const azEnc  = Math.round((az  / 360.0) * 127) & 0x7F;   // 7 bits
+  const rngEnc = Math.round((rng / 320.0) * 63)  & 0x3F;   // 6 bits
+  const dbzEnc = Math.round((dbz / 70.0)  * 63)  & 0x3F;   // 6 bits
+  const dataField = (azEnc << 12) | (rngEnc << 6) | dbzEnc; // 19 bits
+
+  const ssmBits = parseInt(ssmVal) & 0x3;
+
+  // Build 31-bit word (no parity yet)
+  let word31 = (labelRev & 0xFF)
+             | ((sdi & 0x3) << 8)
+             | ((dataField & 0x7FFFF) << 10)
+             | ((ssmBits & 0x3) << 29);
+
+  const parity = calcOddParity(word31);
+  const raw = (word31 | (parity << 31)) >>> 0;
+
+  return {
+    raw, parity, ssmBits, dataField,
+    labelOctal, labelRev, sdi: parseInt(sdi),
+    azEnc, rngEnc, dbzEnc,
+    azDec:  Math.round((azEnc  / 127.0) * 360),
+    rngDec: Math.round((rngEnc / 63.0)  * 320),
+    dbzDec: Math.round((dbzEnc / 63.0)  * 70),
+  };
+}
+
+function liveEncode() {
+  const az  = parseInt(document.getElementById('enc-az').value);
+  const rng = parseInt(document.getElementById('enc-rng').value);
+  const dbz = parseInt(document.getElementById('enc-dbz').value);
+  const sdi = parseInt(document.getElementById('enc-sdi').value);
+  const ssm = parseInt(document.getElementById('enc-ssm').value);
+
+  const e = encodeARINC(az, rng, dbz, sdi, ssm);
+  const bits = e.raw.toString(2).padStart(32,'0');
+
+  // Hex and decimal
+  document.getElementById('enc-hex').textContent = '0x' + e.raw.toString(16).toUpperCase().padStart(8,'0');
+  document.getElementById('enc-dec').textContent = e.raw.toString();
+
+  // Colour-coded binary display
+  // Structure: bit32=parity, bit31-30=SSM, bit29-11=data, bit10-9=SDI, bit8-1=label
+  // In our string index 0=bit32, 1=bit31 ... 31=bit1
+  const p   = `<span style="color:#6b7280">${bits[0]}</span>`;
+  const s   = `<span style="color:#a855f7">${bits[1]}${bits[2]}</span>`;
+  const dat = `<span style="color:#f59e0b">${bits.slice(3,22)}</span>`;
+  const sd  = `<span style="color:#22c55e">${bits[22]}${bits[23]}</span>`;
+  const lbl = `<span style="color:#3b82f6">${bits.slice(24)}</span>`;
+  document.getElementById('enc-binary-display').innerHTML = p + s + dat + sd + lbl;
+
+  // Word visualizer
+  const vizEl = document.getElementById('enc-word-viz');
+  vizEl.innerHTML = `
+    <div style="background:rgba(107,114,128,.2);color:#6b7280;padding:6px 0;text-align:center;font-size:10px;flex:0 0 28px">
+      <span style="font-size:8px;display:block">bit32</span>${bits[0]}
+    </div>
+    <div style="background:rgba(168,85,247,.15);color:#a855f7;padding:6px 4px;text-align:center;font-size:10px;flex:0 0 36px">
+      <span style="font-size:8px;display:block">SSM</span>${bits[1]}${bits[2]}
+    </div>
+    <div style="background:rgba(245,158,11,.15);color:#f59e0b;padding:6px 4px;text-align:center;font-size:10px;flex:1">
+      <span style="font-size:8px;display:block">DATA (19 bits)</span>${bits.slice(3,22)}
+    </div>
+    <div style="background:rgba(34,197,94,.15);color:#22c55e;padding:6px 4px;text-align:center;font-size:10px;flex:0 0 36px">
+      <span style="font-size:8px;display:block">SDI</span>${bits[22]}${bits[23]}
+    </div>
+    <div style="background:rgba(59,130,246,.15);color:#3b82f6;padding:6px 4px;text-align:center;font-size:10px;flex:0 0 72px">
+      <span style="font-size:8px;display:block">LABEL (8 bits)</span>${bits.slice(24)}
+    </div>`;
+
+  // Breakdown table
+  const bkEl = document.getElementById('enc-breakdown');
+  const rows = [
+    { name:'Label',   bits:'1–8',   raw:'270 (oct)',              bin: bits.slice(24),    color:'#3b82f6' },
+    { name:'SDI',     bits:'9–10',  raw:`${e.sdi} (${['LRU1','LRU2','LRU3','Bcast'][e.sdi]})`, bin: bits[22]+bits[23], color:'#22c55e' },
+    { name:'Azimuth', bits:'11–17', raw:`${az}° → enc ${e.azEnc}`,  bin: e.azEnc.toString(2).padStart(7,'0'),  color:'#f59e0b' },
+    { name:'Range',   bits:'18–23', raw:`${rng}nm → enc ${e.rngEnc}`,bin: e.rngEnc.toString(2).padStart(6,'0'), color:'#f59e0b' },
+    { name:'dBZ',     bits:'24–29', raw:`${dbz} → enc ${e.dbzEnc}`, bin: e.dbzEnc.toString(2).padStart(6,'0'), color:'#f59e0b' },
+    { name:'SSM',     bits:'30–31', raw:['Failure','NCD','Test','Normal'][ssm], bin: ssm.toString(2).padStart(2,'0'), color:'#a855f7' },
+    { name:'Parity',  bits:'32',    raw:`${e.parity} (odd)`,        bin: bits[0],          color:'#6b7280' },
+  ];
+  bkEl.innerHTML = rows.map(r => `
+    <div style="display:flex;gap:4px;padding:3px 0;border-bottom:0.5px solid rgba(30,48,72,.4);align-items:center">
+      <div style="flex:0 0 80px;color:${r.color};font-weight:500">${r.name}</div>
+      <div style="flex:0 0 60px;color:var(--color-text-secondary)">${r.bits}</div>
+      <div style="flex:0 0 120px;color:var(--color-text-secondary);font-size:10px">${r.raw}</div>
+      <div style="flex:1;color:${r.color};letter-spacing:.08em">${r.bin}</div>
+    </div>`).join('');
+
+  // Decoder outputs
+  document.getElementById('dec-az').textContent  = e.azDec + '°';
+  document.getElementById('dec-rng').textContent = e.rngDec + ' nm';
+  document.getElementById('dec-dbz').textContent = e.dbzDec + ' dBZ';
+  document.getElementById('dec-parity').textContent = e.parity === calcOddParity(e.raw & 0x7FFFFFFF) ? 'VALID ✓' : 'CORRUPT ✗';
+  document.getElementById('dec-parity').style.color = '#00d090';
+  const ssmLabels = ['FAILURE WARNING','NO COMPUTED DATA','FUNCTIONAL TEST','NORMAL OPERATION'];
+  const ssmColors = ['#ef4444','#f59e0b','#f59e0b','#00d090'];
+  document.getElementById('dec-ssm-out').textContent = ssmLabels[ssm];
+  document.getElementById('dec-ssm-out').style.color = ssmColors[ssm];
+  document.getElementById('dec-sdi-out').textContent = ['LRU 1','LRU 2','LRU 3','BROADCAST'][e.sdi];
+
+  // Cockpit alert
+  generateAlert(e.azDec, e.rngDec, e.dbzDec, ssm);
+
+  // Bus waveform
+  drawBusWave(bits);
+}
+
+function generateAlert(az, rng, dbz, ssm) {
+  const box = document.getElementById('cockpit-alert-box');
+  if(ssm === 0) {
+    box.style.background = 'rgba(239,68,68,.08)';
+    box.style.borderColor = 'rgba(239,68,68,.4)';
+    box.innerHTML = `
+      <div style="color:#ef4444;font-size:14px;font-weight:bold;margin-bottom:8px">⛔ RADAR FAILURE — DATA INVALID</div>
+      <div style="color:var(--color-text-secondary);font-size:11px">SSM = 00 (Failure Warning). Cockpit display ignores this word. Crew alerted to radar malfunction.</div>`;
+    return;
+  }
+  if(ssm === 1 || ssm === 2) {
+    box.style.background = 'rgba(245,158,11,.08)';
+    box.style.borderColor = 'rgba(245,158,11,.4)';
+    box.innerHTML = `
+      <div style="color:#f59e0b;font-size:14px;font-weight:bold;margin-bottom:8px">⚠ DATA UNRELIABLE</div>
+      <div style="color:var(--color-text-secondary);font-size:11px">SSM indicates test/no-data mode. Display shows data with caution flag.</div>`;
+    return;
+  }
+  let alertColor, alertBg, alertBorder, alertTitle, alertMsg, alertIcon;
+  if(dbz >= 55) {
+    alertIcon='🔴'; alertColor='#ef4444';
+    alertBg='rgba(239,68,68,.08)'; alertBorder='rgba(239,68,68,.5)';
+    alertTitle='SEVERE THUNDERSTORM AHEAD — DEVIATE IMMEDIATELY';
+    alertMsg=`Extreme convective activity detected. Hail and severe turbulence probable.`;
+  } else if(dbz >= 40) {
+    alertIcon='🟠'; alertColor='#f08214';
+    alertBg='rgba(240,130,20,.08)'; alertBorder='rgba(240,130,20,.5)';
+    alertTitle='HEAVY PRECIPITATION AHEAD — CAUTION';
+    alertMsg=`Significant rain return. Moderate to severe turbulence possible.`;
+  } else if(dbz >= 30) {
+    alertIcon='🟡'; alertColor='#e6dc14';
+    alertBg='rgba(230,220,20,.08)'; alertBorder='rgba(230,220,20,.4)';
+    alertTitle='MODERATE PRECIPITATION — MONITOR';
+    alertMsg=`Light to moderate rain. Mild turbulence possible.`;
+  } else {
+    alertIcon='🟢'; alertColor='#00d090';
+    alertBg='rgba(0,208,144,.08)'; alertBorder='rgba(0,208,144,.3)';
+    alertTitle='LIGHT PRECIPITATION — NO ACTION';
+    alertMsg=`Light drizzle or cloud returns. No significant hazard.`;
+  }
+
+  const bearing = String(az).padStart(3,'0');
+  box.style.background  = alertBg;
+  box.style.borderColor = alertBorder;
+  box.innerHTML = `
+    <div style="color:${alertColor};font-size:15px;font-weight:bold;margin-bottom:10px">${alertIcon} ${alertTitle}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px">
+      <div style="background:rgba(0,0,0,.3);border-radius:4px;padding:7px 10px;text-align:center">
+        <div style="font-size:10px;color:var(--color-text-secondary)">BEARING</div>
+        <div style="font-size:18px;font-weight:bold;color:${alertColor};font-family:var(--font-mono)">${bearing}°</div>
+      </div>
+      <div style="background:rgba(0,0,0,.3);border-radius:4px;padding:7px 10px;text-align:center">
+        <div style="font-size:10px;color:var(--color-text-secondary)">DISTANCE</div>
+        <div style="font-size:18px;font-weight:bold;color:${alertColor};font-family:var(--font-mono)">${rng} NM</div>
+      </div>
+      <div style="background:rgba(0,0,0,.3);border-radius:4px;padding:7px 10px;text-align:center">
+        <div style="font-size:10px;color:var(--color-text-secondary)">INTENSITY</div>
+        <div style="font-size:18px;font-weight:bold;color:${alertColor};font-family:var(--font-mono)">${dbz} dBZ</div>
+      </div>
+    </div>
+    <div style="color:var(--color-text-secondary);font-size:11px;line-height:1.6">${alertMsg}</div>`;
+}
+
+function drawBusWave(bits) {
+  const canvas = document.getElementById('bus-wave-canvas');
+  if(!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0,0,W,H);
+
+  // Background
+  ctx.fillStyle = '#06090e';
+  ctx.fillRect(0,0,W,H);
+
+  // Grid lines
+  ctx.strokeStyle = 'rgba(30,48,72,.6)';
+  ctx.lineWidth = 0.5;
+  for(let i=0;i<=32;i++){
+    const x = (i/32)*W;
+    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke();
+  }
+
+  // Waveform — NRZ (Non Return to Zero) like ARINC
+  const bitW = W / 32;
+  ctx.lineWidth = 2;
+  const high = H * 0.15;
+  const low  = H * 0.75;
+
+  // Colour each bit segment by field
+  // bits[0]=parity(bit32), bits[1-2]=SSM, bits[3-21]=data, bits[22-23]=SDI, bits[24-31]=label
+  // We draw LSB first (bits[31] first on wire)
+  const wireOrder = bits.split('').reverse(); // bit1 first
+  const fieldColors = [];
+  for(let i=0;i<32;i++){
+    if(i < 8)       fieldColors.push('#3b82f6');  // label
+    else if(i < 10) fieldColors.push('#22c55e');  // sdi
+    else if(i < 29) fieldColors.push('#f59e0b');  // data
+    else if(i < 31) fieldColors.push('#a855f7');  // ssm
+    else            fieldColors.push('#6b7280');  // parity
+  }
+
+  let prevY = wireOrder[0]==='1' ? high : low;
+  for(let i=0;i<32;i++){
+    const x1 = i * bitW;
+    const x2 = x1 + bitW;
+    const y  = wireOrder[i]==='1' ? high : low;
+
+    ctx.strokeStyle = fieldColors[i];
+    ctx.beginPath();
+    // Vertical transition
+    if(y !== prevY){
+      ctx.moveTo(x1, prevY); ctx.lineTo(x1, y);
+    } else {
+      ctx.moveTo(x1, y);
+    }
+    ctx.lineTo(x2, y);
+    ctx.stroke();
+
+    // Bit label
+    ctx.fillStyle = fieldColors[i];
+    ctx.font = '8px Consolas';
+    ctx.fillText(wireOrder[i], x1 + bitW/2 - 3, H - 6);
+
+    prevY = y;
+  }
+
+  // Label
+  ctx.fillStyle = 'rgba(0,208,144,.6)';
+  ctx.font = '9px Consolas';
+  ctx.fillText('ARINC 429 NRZ waveform — 32 bits @ 100kbps', 4, 10);
+}
+
+// Run encoder on tab open and on page load
+function initEncoder() {
+  updEncDbz(document.getElementById('enc-dbz').value);
+  liveEncode();
+}
+
+// Patch switchTab to init encoder when opened
+const _origSwitchTab = switchTab;
+// Override to also init encoder
+document.addEventListener('DOMContentLoaded', () => {
+  initEncoder();
+});
+
+// ── Send to cockpit ───────────────────────────────────────────────────────────
+async function sendToCockpit() {
+  const az  = parseInt(document.getElementById('enc-az').value);
+  const rng = parseInt(document.getElementById('enc-rng').value);
+  const dbz = parseInt(document.getElementById('enc-dbz').value);
+  const sdi = parseInt(document.getElementById('enc-sdi').value);
+  const ssm = parseInt(document.getElementById('enc-ssm').value);
+  const sender = document.getElementById('enc-sender').value || 'LRU-1';
+
+  const e = encodeARINC(az, rng, dbz, sdi, ssm);
+  const bits = e.raw.toString(2).padStart(32,'0');
+  const hex = '0x' + e.raw.toString(16).toUpperCase().padStart(8,'0');
+
+  const ssmNames = ['FAILURE_WARNING','NO_COMPUTED_DATA','FUNCTIONAL_TEST','NORMAL_OPERATION'];
+  const intensityNames = ['NONE','LIGHT','MODERATE','HEAVY','INTENSE','EXTREME','HAIL'];
+  const intIdx = dbz < 20 ? 0 : dbz < 30 ? 1 : dbz < 40 ? 2 : dbz < 50 ? 3 : dbz < 55 ? 4 : dbz < 70 ? 5 : 6;
+
+  const alertLevels = ['NO ACTION','NO ACTION','NO ACTION','MONITOR','CAUTION','DEVIATE NOW','DEVIATE NOW'];
+
+  const payload = {
+    hex,
+    binary:     bits,
+    label:      184,
+    label_octal: '270',
+    label_name: 'WEATHER_CELL',
+    sdi,
+    ssm:        ssmNames[ssm],
+    azimuth:    e.azDec,
+    range_nm:   e.rngDec,
+    dbz:        e.dbzDec,
+    intensity:  intensityNames[intIdx],
+    alert:      alertLevels[intIdx],
+    sender,
+    data_field: e.dataField,
+  };
+
+  const statusEl = document.getElementById('tx-status');
+  statusEl.style.display = 'block';
+  statusEl.style.background = 'rgba(245,158,11,.1)';
+  statusEl.style.borderLeft = '3px solid #f59e0b';
+  statusEl.style.color = '#f59e0b';
+  statusEl.textContent = '⟳ Transmitting ARINC 429 word on bus...';
+
+  try {
+    const r = await fetch('/api/transmit', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const d = await r.json();
+    if(d.ok) {
+      statusEl.style.background = 'rgba(0,208,144,.1)';
+      statusEl.style.borderLeft = '3px solid #00d090';
+      statusEl.style.color = '#00d090';
+      statusEl.textContent = `✓ Transmitted ${hex} to all connected cockpit receivers — ${new Date().toLocaleTimeString()}`;
+      setTimeout(() => { statusEl.style.display = 'none'; }, 5000);
+    } else {
+      throw new Error(d.error);
+    }
+  } catch(err) {
+    statusEl.style.background = 'rgba(239,68,68,.1)';
+    statusEl.style.borderLeft = '3px solid #ef4444';
+    statusEl.style.color = '#ef4444';
+    statusEl.textContent = '✗ Transmission failed: ' + err.message;
+  }
+}
+
+// Show receiver URL on page load
+window.addEventListener('load', () => {
+  const urlEl = document.getElementById('rx-url');
+  if(urlEl) urlEl.textContent = window.location.origin + '/cockpit';
+});
+
 </script>
 </body>
 </html>
